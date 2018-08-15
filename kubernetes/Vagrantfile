@@ -1,0 +1,55 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+data_disk = './disk/kubernets_data_disk.vdi'
+
+Vagrant.configure("2") do |config|
+  config.vm.box = 'centos/7'
+  config.hostmanager.enabled = true
+  config.hostmanager.manage_host = true
+  config.hostmanager.manage_guest = true
+  config.hostmanager.ignore_private_ip = false
+  config.hostmanager.include_offline = true
+  config.vm.hostname = 'kubernetes'
+  config.vm.network "private_network", ip: "10.0.7.101"
+  config.vm.provider "virtualbox" do |vb|
+    if !File.exist?(data_disk)
+      # 100 * 1024M = 100G
+      vb.customize ['createhd', '--filename', data_disk, '--size', 100 * 1024]
+    end
+    vb.customize ['storageattach', :id, '--storagectl', 'IDE', '--port', 1, '--device', 0, '--type', 'hdd', '--medium', data_disk]
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    vb.memory = "4096"
+    vb.cpus = "2"
+  end
+
+  config.vm.provision "shell", inline: <<-SHELL
+set -e
+set -x
+
+if [ -f /etc/default/disk-format ]
+then
+   echo "disk is formated."
+   exit 0
+fi
+
+sudo fdisk -u /dev/sdb <<EOF
+n
+p
+1
+
+
+w
+EOF
+
+mkfs.xfs /dev/sdb1
+mkdir -p /data
+mount -t xfs /dev/sdb1 /data && sudo echo "/dev/sdb1 xfs        /data    defaults        0 0" >> /etc/fstab
+
+date > /etc/default/disk-format
+  SHELL
+
+  config.vm.provision "shell", inline: <<-SHELL
+    echo "deploy done"
+  SHELL
+end
