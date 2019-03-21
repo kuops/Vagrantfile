@@ -1,0 +1,5 @@
+*.vmdk
+*.vdi
+.vagrant/
+.DS_Store
+*.log

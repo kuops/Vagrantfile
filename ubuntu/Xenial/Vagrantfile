@@ -1,0 +1,62 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+VAGRANTFILE_API_VERSION = "2"
+
+cluster = {
+  "ubuntu-node1" => { :ip => "10.0.16.101", :cpu => 2, :mem => 2048, :extdisk => "./ubuntu-node1.vmdk" },
+  "ubuntu-node2" => { :ip => "10.0.16.102", :cpu => 2, :mem => 2048, :extdisk => "./ubuntu-node2.vmdk" },
+  "ubuntu-node3" => { :ip => "10.0.16.103", :cpu => 2, :mem => 2048, :extdisk => "./ubuntu-node3.vmdk" },
+  "ubuntu-node4" => { :ip => "10.0.16.104", :cpu => 2, :mem => 4096, :extdisk => "./ubuntu-node4.vmdk" },
+}
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+
+  cluster.each_with_index do |(hostname, info), index|
+    config.vm.define hostname do |cfg|
+      cfg.vm.provider :virtualbox do |vb, override|  
+        override.vm.box = 'ubuntu/xenial'
+        override.vm.box_url = "https://mirrors.huaweicloud.com/ubuntu-cloud-images/xenial/current/xenial-server-cloudimg-amd64-vagrant.box"
+        override.vm.box_check_update = false 
+        override.vm.boot_timeout = 600
+        override.vm.network :private_network, ip: "#{info[:ip]}"
+        override.vm.hostname = hostname
+        override.vm.synced_folder ".", "/vagrant", disabled: true
+        vb.customize ["modifyvm", :id, "--uartmode1", "file", "/tmp/vagrant-console.log"]
+        vb.name = hostname
+        vb.customize ["modifyvm", :id, "--memory", info[:mem], "--hwvirtex", "on"]
+        vb.cpus = "#{info[:cpu]}"
+        if !File.exist?(info[:extdisk])
+          vb.customize ['createhd', '--filename', info[:extdisk], '--size', 100 * 1024]
+        end
+        vb.customize ['storageattach', :id, '--storagectl', 'SCSI', '--port', 2, '--device', 0, '--type', 'hdd', '--medium', info[:extdisk]]
+      end # end provider
+    end # end config
+  end # end cluster
+
+  config.vm.provision "shell", inline: <<-SHELL
+    #!/bin/bash
+    set -ex
+    
+    # setting data storage
+    if ! [ -f /etc/default/disk-format ];then
+      mkdir -p /data
+      parted /dev/sdc mklabel gpt
+      parted /dev/sdc mkpart primary 0 100%
+      partprobe /dev/sdc
+      sleep 1
+      mkfs.ext4 /dev/sdc1
+      mount /dev/sdc1 /data
+      echo "/dev/sdc1 /data  ext4 defaults 0 0" >> /etc/fstab
+    else
+      echo "disk formated."|tee -a /etc/default/disk-format
+    fi
+
+  SHELL
+ 
+  config.trigger.before :destroy do |trigger|
+    trigger.ruby do |env,machine|
+      puts  "VBoxManage storageattach #{machine.id} --storagectl 'SCSI' --port 2 --device 0 --type hdd --medium none"
+    end # end trigger
+  end # end config
+end
