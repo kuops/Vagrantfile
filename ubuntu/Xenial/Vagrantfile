@@ -12,6 +12,10 @@ cluster = {
 
 Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
+  if Vagrant.has_plugin?("vagrant-vbguest")
+    config.vbguest.auto_update = false
+  end
+
   cluster.each_with_index do |(hostname, info), index|
     config.vm.define hostname do |cfg|
       cfg.vm.provider :virtualbox do |vb, override|  
@@ -38,6 +42,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     #!/bin/bash
     set -ex
     
+    export DEBIAN_FRONTEND=noninteractive 
+    
     # setting data storage
     if ! [ -f /etc/default/disk-format ];then
       mkdir -p /data
@@ -48,9 +54,107 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
       mkfs.ext4 /dev/sdc1
       mount /dev/sdc1 /data
       echo "/dev/sdc1 /data  ext4 defaults 0 0" >> /etc/fstab
+      echo "ok" > /etc/default/disk-format
     else
       echo "disk formated."|tee -a /etc/default/disk-format
     fi
+    
+    # remove cloud init
+    systemctl disable cloud-config.service
+    systemctl disable cloud-final.service
+    systemctl disable cloud-init-local.service
+    systemctl disable cloud-init.service
+    apt-get remove cloud-init -y
+    apt-get autoremove -y
+
+    # replace apt sources to aliyun
+    sed -i 's@archive.ubuntu.com@mirrors.aliyun.com@g' /etc/apt/sources.list
+    sed -i 's@security.ubuntu.com@mirrors.aliyun.com@g' /etc/apt/sources.list
+
+    # apt-get install  software
+    # list soft versions apt-cache madison docker-ce
+    curl -fsSL http://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg | apt-key add -
+    echo "deb http://mirrors.aliyun.com/docker-ce/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker-ce.list
+    apt-get update -y
+    apt-get install telnet docker-ce -y
+
+    apt-get install docker-ce=5:18.09.3~3-0~ubuntu-xenial
+
+    cat > /etc/docker/daemon.json <<EOF
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "registry-mirrors": ["https://docker.mirrors.ustc.edu.cn"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
+}
+EOF
+
+    mkdir -p /etc/systemd/system/docker.service.d
+    usermod -G docker vagrant
+
+    # Restart docker.
+    systemctl daemon-reload
+    systemctl restart docker
+
+    # kernel performance settings useing ibm-cloud-private 
+    { \
+       echo "net.ipv4.ip_forward = 1" ; \
+       echo "net.ipv4.conf.all.rp_filter = 0" ; \
+       echo "net.ipv4.conf.all.proxy_arp = 1" ; \
+       echo "net.ipv4.tcp_keepalive_time = 600" ; \
+       echo "net.ipv4.tcp_keepalive_intvl = 60" ; \
+       echo "net.ipv4.tcp_keepalive_probes = 20" ; \
+       echo "net.ipv4.ip_nonlocal_bind = 1" ; \
+       echo "net.ipv4.conf.all.accept_redirects = 1" ; \
+       echo "net.ipv4.conf.all.send_redirects = 1" ; \
+       echo "net.ipv4.conf.all.accept_source_route = 1" ; \
+       echo "net.ipv4.conf.all.shared_media = 1" ; \
+       echo "net.ipv6.conf.all.disable_ipv6 = 1" ; \
+       echo "net.core.netdev_max_backlog = 182757" ; \
+       echo "net.bridge.bridge-nf-call-iptables = 1" ; \
+       echo "fs.inotify.max_queued_events = 1048576" ; \
+       echo "fs.inotify.max_user_instances = 1048576" ; \
+       echo "fs.inotify.max_user_watches = 1048576" ; \
+       echo "vm.max_map_count = 262144" ; \
+       echo "kernel.dmesg_restrict = 0" ; \
+    } > /etc/sysctl.d/kubernetes.conf
+
+    sysctl --system
+
+    { \
+       echo "* soft nofile 1048576" ; \
+       echo "* hard nofile 1048576" ; \
+       echo "root soft nofile 1048576" ; \
+       echo "root hard nofile 1048576" ; \
+       echo "* soft memlock unlimited" ; \
+       echo "* hard memlock unlimited" ; \
+    } > /etc/security/limits.d/kubernetes.conf
+
+
+    # disable swap partition
+    swapoff -a
+    sed -i 's@.*swap.*@#&@g' /etc/fstab
+
+    # ipvs modules loaded
+    { \
+       echo "ip_vs" ; \
+       echo "ip_vs" ; \
+       echo "ip_vs_rr" ; \
+       echo "ip_vs_wrr" ; \
+       echo "ip_vs_sh" ; \
+       echo "nf_conntrack_ipv4" ; \
+    } > /etc/modules-load.d/ipvs.conf
+    systemctl start systemd-modules-load.service
+
+    # disable ufw 
+    systemctl stop ufw.service
+    systemctl disable ufw.service
+
+    # disable LC_CTYPE=zh_CN.UTF-8 warning
+    locale-gen zh_CN.UTF-8
 
   SHELL
  
