@@ -10,6 +10,10 @@ cluster = {
   "ubuntu-node4" => { :ip => "10.0.16.104", :cpu => 2, :mem => 4096, :extdisk => "./ubuntu-node4.vmdk" },
 }
 
+user_home_path = ENV['HOME']
+rsa_key = IO.read(Vagrant::Util::Platform.fs_real_path("#{user_home_path}/.ssh/id_rsa"))
+rsa_pub = IO.read(Vagrant::Util::Platform.fs_real_path("#{user_home_path}/.ssh/id_rsa.pub"))
+
 Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
 
   if Vagrant.has_plugin?("vagrant-vbguest")
@@ -42,8 +46,18 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     #!/bin/bash
     set -ex
     
-    export DEBIAN_FRONTEND=noninteractive 
-    
+    export DEBIAN_FRONTEND=noninteractive
+
+    # add ssh-keys
+    mkdir -p /root/.ssh
+    if [[ "$HOSTNAME" == "ubuntu-node1" ]] ;then
+      echo "#{rsa_key}" > /root/.ssh/id_rsa
+      echo "#{rsa_pub}" > /root/.ssh/id_rsa.pub
+      chmod 600 /root/.ssh/id_rsa
+    fi
+    echo "#{rsa_pub}" > /root/.ssh/authorized_keys
+    echo 'StrictHostKeyChecking no\nUserKnownHostsFile /dev/null\nLogLevel QUIET' >> /root/.ssh/config
+
     # setting data storage
     if ! [ -f /etc/default/disk-format ];then
       mkdir -p /data
@@ -58,14 +72,22 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     else
       echo "disk formated."|tee -a /etc/default/disk-format
     fi
+
+    # ntp conf
+    { \
+    echo "server cn.pool.ntp.org" ; \
+    echo "server ntp1.aliyun.com" ; \
+    echo "server ntp2.aliyun.com" ; \
+    echo "server ntp3.aliyun.com" ; \
+    } > /etc/ntp.conf
+    systemctl restart ntp
     
     # remove cloud init
     systemctl disable cloud-config.service
     systemctl disable cloud-final.service
     systemctl disable cloud-init-local.service
     systemctl disable cloud-init.service
-    apt-get remove cloud-init -y
-    apt-get autoremove -y
+    apt-get remove cloud-init -yq
 
     # replace apt sources to aliyun
     sed -i 's@archive.ubuntu.com@mirrors.aliyun.com@g' /etc/apt/sources.list
@@ -76,7 +98,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     curl -fsSL http://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg | apt-key add -
     echo "deb http://mirrors.aliyun.com/docker-ce/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker-ce.list
     apt-get update -y
-    apt-get install docker-ce=5:18.09.3~3-0~ubuntu-bionic lrzsz telnet -y
+    apt-get install docker-ce=5:18.09.3~3-0~ubuntu-bionic lrzsz telnet ntp ipvsadm htop iftop iotop strace nmap tcpdump sysstat socat atop mytop ncdu dstat tcptrack -y
     mkdir -p /data/docker
 
     cat > /etc/docker/daemon.json <<EOF
@@ -152,6 +174,10 @@ EOF
     # disable ufw 
     systemctl stop ufw.service
     systemctl disable ufw.service
+
+    # clean
+    apt-get autoremove -yq
+    apt-get autoclean
 
   SHELL
  
