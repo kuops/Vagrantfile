@@ -19,8 +19,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   cluster.each_with_index do |(hostname, info), index|
     config.vm.define hostname do |cfg|
       cfg.vm.provider :virtualbox do |vb, override|  
-        override.vm.box = 'ubuntu/xenial'
-        override.vm.box_url = "https://mirrors.huaweicloud.com/ubuntu-cloud-images/xenial/current/xenial-server-cloudimg-amd64-vagrant.box"
+        override.vm.box = 'ubuntu/bionic'
+        override.vm.box_url = "https://mirrors.huaweicloud.com/ubuntu-cloud-images/bionic/20190321/bionic-server-cloudimg-amd64-vagrant.box"
         override.vm.box_check_update = false 
         override.vm.boot_timeout = 600
         override.vm.network :private_network, ip: "#{info[:ip]}"
@@ -76,7 +76,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     curl -fsSL http://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg | apt-key add -
     echo "deb http://mirrors.aliyun.com/docker-ce/linux/ubuntu $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker-ce.list
     apt-get update -y
-    apt-get install docker-ce=5:18.09.3~3-0~ubuntu-xenial lrzsz telnet -y
+    apt-get install docker-ce=5:18.09.3~3-0~ubuntu-bionic lrzsz telnet -y
     mkdir -p /data/docker
 
     cat > /etc/docker/daemon.json <<EOF
@@ -152,9 +152,6 @@ EOF
     # disable ufw 
     systemctl stop ufw.service
     systemctl disable ufw.service
-
-    # disable LC_CTYPE=zh_CN.UTF-8 warning
-    locale-gen zh_CN.UTF-8
 
   SHELL
  
