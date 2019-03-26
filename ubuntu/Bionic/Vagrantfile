@@ -73,20 +73,17 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
       echo "disk formated."|tee -a /etc/default/disk-format
     fi
 
-    # ntp conf
-    { \
-    echo "server cn.pool.ntp.org" ; \
-    echo "server ntp1.aliyun.com" ; \
-    echo "server ntp2.aliyun.com" ; \
-    echo "server ntp3.aliyun.com" ; \
-    } > /etc/ntp.conf
-    systemctl restart ntp
     
     # remove cloud init
     systemctl disable cloud-config.service
     systemctl disable cloud-final.service
     systemctl disable cloud-init-local.service
     systemctl disable cloud-init.service
+    systemctl stop cloud-config.service
+    systemctl stop cloud-final.service
+    systemctl stop cloud-init-local.service
+    systemctl stop cloud-init.service
+    
     apt-get remove cloud-init -yq
 
     # replace apt sources to aliyun
@@ -100,7 +97,17 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     apt-get update -y
     apt-get install docker-ce=5:18.09.3~3-0~ubuntu-bionic lrzsz telnet ntp ipvsadm htop iftop iotop strace nmap tcpdump sysstat socat atop mytop ncdu dstat tcptrack -y
     mkdir -p /data/docker
+    
+    # setting ntp
+    { \
+    echo "server cn.pool.ntp.org" ; \
+    echo "server ntp1.aliyun.com" ; \
+    echo "server ntp2.aliyun.com" ; \
+    echo "server ntp3.aliyun.com" ; \
+    } > /etc/ntp.conf
+    systemctl restart ntp
 
+    # setting docker
     cat > /etc/docker/daemon.json <<EOF
 {
   "data-root": "/data/docker",
