@@ -107,6 +107,9 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     } > /etc/ntp.conf
     systemctl restart ntp
 
+    # set timezone
+    timedatectl set-timezone Asia/Shanghai
+
     # setting docker
     cat > /etc/docker/daemon.json <<EOF
 {
