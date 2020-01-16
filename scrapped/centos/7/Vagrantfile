@@ -1,0 +1,199 @@
+﻿# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+VAGRANTFILE_API_VERSION = "2"
+
+cluster = {
+  "centos-node1" => { :ip => "10.0.7.101", :cpu => 2, :mem => 2048, :extdisk => "./centos-node1-sdb.vmdk" },
+  "centos-node2" => { :ip => "10.0.7.102", :cpu => 2, :mem => 2048, :extdisk => "./centos-node2-sdb.vmdk" },
+  "centos-node3" => { :ip => "10.0.7.103", :cpu => 2, :mem => 2048, :extdisk => "./centos-node3-sdb.vmdk" },
+  "centos-node4" => { :ip => "10.0.7.104", :cpu => 2, :mem => 4096, :extdisk => "./centos-node4-sdb.vmdk" },
+}
+
+user_home_path = ENV['HOME']
+rsa_key = IO.read(Vagrant::Util::Platform.fs_real_path("#{user_home_path}/.ssh/id_rsa"))
+rsa_pub = IO.read(Vagrant::Util::Platform.fs_real_path("#{user_home_path}/.ssh/id_rsa.pub"))
+
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+
+  if Vagrant.has_plugin?("vagrant-vbguest")
+    config.vbguest.auto_update = false
+  end
+
+  cluster.each_with_index do |(hostname, info), index|
+    config.vm.define hostname do |cfg|
+      cfg.vm.provider :virtualbox do |vb, override|  
+        override.vm.box = 'centos/7'
+        override.vm.box_url = "https://mirrors.ustc.edu.cn/centos-cloud/centos/7/vagrant/x86_64/images/CentOS-7-x86_64-Vagrant-1902_01.VirtualBox.box"
+        override.vm.box_check_update = false 
+        override.vm.boot_timeout = 600
+        override.vm.network :private_network, ip: "#{info[:ip]}"
+        override.vm.hostname = hostname
+        override.vm.synced_folder ".", "/vagrant", disabled: true
+        vb.customize ["modifyvm", :id, "--uartmode1", "file", "/tmp/vagrant-console.log"]
+        vb.name = hostname
+        vb.customize ["modifyvm", :id, "--memory", info[:mem], "--hwvirtex", "on"]
+        vb.cpus = "#{info[:cpu]}"
+        if !File.exist?(info[:extdisk])
+          vb.customize ['createhd', '--filename', info[:extdisk], '--size', 100 * 1024]
+        end
+        vb.customize ['storageattach', :id, '--storagectl', 'IDE', '--port', 1, '--device', 0, '--type', 'hdd', '--medium', info[:extdisk]]
+      end # end provider
+    end # end config
+  end # end cluster
+
+  config.vm.provision "shell", inline: <<-SHELL
+    #!/bin/bash
+    set -ex
+
+    PATH=$PATH:/usr/local/bin
+    
+    # add ssh-keys
+    mkdir -p /root/.ssh
+    if [[ "$HOSTNAME" == "ubuntu-node1" ]] ;then
+      echo "#{rsa_key}" > /root/.ssh/id_rsa
+      echo "#{rsa_pub}" > /root/.ssh/id_rsa.pub
+      chmod 600 /root/.ssh/id_rsa
+    fi
+    echo "#{rsa_pub}" > /root/.ssh/authorized_keys
+    echo 'StrictHostKeyChecking no\nUserKnownHostsFile /dev/null\nLogLevel QUIET' >> /root/.ssh/config
+
+    # setting data storage
+    if ! [ -f /etc/default/disk-format ];then
+      mkdir -p /data
+      parted /dev/sdb mklabel gpt
+      parted /dev/sdb mkpart primary 0 100%
+      partprobe /dev/sdb
+      sleep 1
+      mkfs.ext4 /dev/sdb1
+      mount /dev/sdb1 /data
+      echo "/dev/sdb1 /data  ext4 defaults 0 0" >> /etc/fstab
+      echo "ok" > /etc/default/disk-format
+    else
+      echo "disk formated."|tee -a /etc/default/disk-format
+    fi
+
+    ## replace yum repo to mirrors.aliyun.com
+    curl -Lo /etc/yum.repos.d/CentOS-Base.repo http://mirrors.aliyun.com/repo/Centos-7.repo
+    curl -Lo /etc/yum.repos.d/epel.repo http://mirrors.aliyun.com/repo/epel-7.repo
+
+
+    # install software
+    yum -y install lrzsz nfs-utils     
+
+    # disable selinux
+    sed  -i 's@^SELINUX=.*@SELINUX=disabled@g' /etc/selinux/config
+    setenforce 1
+
+    # set dns use self manage
+    echo -e "[main]\ndns=none" > /etc/NetworkManager/conf.d/dns.conf
+    systemctl restart NetworkManager
+    echo "nameserver 114.114.114.114" > /etc/resolv.conf
+    
+    # setting ntp
+    yum -y install ntp
+    systemctl stop chronyd
+    systemctl disable chronyd
+
+    { \
+    echo "server cn.pool.ntp.org" ; \
+    echo "server ntp1.aliyun.com" ; \
+    echo "server ntp2.aliyun.com" ; \
+    echo "server ntp3.aliyun.com" ; \
+    } > /etc/ntp.conf
+
+    systemctl restart ntpd
+    systemctl enable ntpd
+
+    # set timezone
+    timedatectl set-timezone Asia/Shanghai
+
+    # setting docker
+    curl -Lo /etc/yum.repos.d/docker-ce.repo https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo
+    sed  -i 's@download-stage.docker.com@mirrors.aliyun.com/docker-ce@g' /etc/yum.repos.d/docker-ce.repo
+    yum -y install docker-ce
+    mkdir -p /etc/docker
+    cat > /etc/docker/daemon.json <<EOF
+{
+  "data-root": "/data/docker",
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "registry-mirrors": ["https://docker.mirrors.ustc.edu.cn"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
+}
+EOF
+
+    mkdir -p /etc/systemd/system/docker.service.d
+    usermod -G docker vagrant
+
+    # Restart docker.
+    systemctl daemon-reload
+    systemctl restart docker
+
+    # kernel performance settings useing ibm-cloud-private 
+    { \
+       echo "net.ipv4.ip_forward = 1" ; \
+       echo "net.ipv4.conf.all.rp_filter = 0" ; \
+       echo "net.ipv4.conf.all.proxy_arp = 1" ; \
+       echo "net.ipv4.tcp_keepalive_time = 600" ; \
+       echo "net.ipv4.tcp_keepalive_intvl = 60" ; \
+       echo "net.ipv4.tcp_keepalive_probes = 20" ; \
+       echo "net.ipv4.ip_nonlocal_bind = 1" ; \
+       echo "net.ipv4.conf.all.accept_redirects = 1" ; \
+       echo "net.ipv4.conf.all.send_redirects = 1" ; \
+       echo "net.ipv4.conf.all.accept_source_route = 1" ; \
+       echo "net.ipv4.conf.all.shared_media = 1" ; \
+       echo "net.ipv6.conf.all.disable_ipv6 = 1" ; \
+       echo "net.core.netdev_max_backlog = 182757" ; \
+       echo "net.bridge.bridge-nf-call-iptables = 1" ; \
+       echo "fs.inotify.max_queued_events = 1048576" ; \
+       echo "fs.inotify.max_user_instances = 1048576" ; \
+       echo "fs.inotify.max_user_watches = 1048576" ; \
+       echo "vm.max_map_count = 262144" ; \
+       echo "kernel.dmesg_restrict = 0" ; \
+    } > /etc/sysctl.d/kubernetes.conf
+
+    sysctl --system
+
+    { \
+       echo "* soft nofile 1048576" ; \
+       echo "* hard nofile 1048576" ; \
+       echo "root soft nofile 1048576" ; \
+       echo "root hard nofile 1048576" ; \
+       echo "* soft memlock unlimited" ; \
+       echo "* hard memlock unlimited" ; \
+    } > /etc/security/limits.d/kubernetes.conf
+
+
+    # disable swap partition
+    swapoff -a
+    sed -i 's@.*swap.*@#&@g' /etc/fstab
+
+    # ipvs modules loaded
+    { \
+       echo "ip_vs" ; \
+       echo "ip_vs" ; \
+       echo "ip_vs_rr" ; \
+       echo "ip_vs_wrr" ; \
+       echo "ip_vs_sh" ; \
+       echo "nf_conntrack_ipv4" ; \
+    } > /etc/modules-load.d/ipvs.conf
+    systemctl start systemd-modules-load.service
+
+    # update kernel
+    yum -y install http://mirrors.ustc.edu.cn/elrepo/kernel/el7/x86_64/RPMS/kernel-ml-5.0.7-1.el7.elrepo.x86_64.rpm
+    sed  -i 's@GRUB_DEFAULT=.*@GRUB_DEFAULT=0@' /etc/default/grub
+    grub2-mkconfig -o /boot/grub2/grub.cfg
+    reboot
+  SHELL
+ 
+  config.trigger.before :destroy do |trigger|
+    trigger.ruby do |env,machine|
+      puts  "VBoxManage storageattach #{machine.id} --storagectl 'IDE' --port 1 --device 0 --type hdd --medium none"
+    end # end trigger
+  end # end config
+end
